@@ -1,0 +1,266 @@
+<div
+  id="cbi-recommender-{{ block.id }}"
+  class="cbi-recommender"
+  data-quiz-id="{{ block.settings.quiz_id | escape }}"
+>
+  <div class="cbi-recommender__inner">
+    <h2 class="cbi-recommender__title">
+      {{ block.settings.heading | escape }}
+    </h2>
+
+    <p class="cbi-recommender__description">
+      {{ block.settings.description | escape }}
+    </p>
+
+    <div class="cbi-recommender__content" aria-live="polite">
+      {% if block.settings.quiz_id == blank %}
+        <p>El comerciante debe configurar el cuestionario de CBI-Market.</p>
+      {% else %}
+        <p class="cbi-recommender__status">Cargando cuestionario...</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<style>
+  #cbi-recommender-{{ block.id }} {
+    --cbi-primary: {{ block.settings.primary_color }};
+    --cbi-border: #e5e5e5;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 24px 16px;
+  }
+
+  #cbi-recommender-{{ block.id }} *,
+  #cbi-recommender-{{ block.id }} *::before,
+  #cbi-recommender-{{ block.id }} *::after {
+    box-sizing: border-box;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-recommender__inner {
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 24px;
+    border: 1px solid var(--cbi-border);
+    border-radius: 14px;
+    background: #fff;
+    color: #222;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-recommender__title {
+    margin: 0 0 12px;
+    color: var(--cbi-primary);
+    font-size: clamp(1.4rem, 4vw, 2rem);
+    line-height: 1.25;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-recommender__description {
+    margin: 0 0 20px;
+    line-height: 1.6;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-question {
+    margin: 0 0 22px;
+    padding: 0;
+    border: 0;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-question legend {
+    margin-bottom: 12px;
+    font-weight: 600;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-answer {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 10px 0;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+
+  #cbi-recommender-{{ block.id }} input,
+  #cbi-recommender-{{ block.id }} textarea {
+    max-width: 100%;
+    accent-color: var(--cbi-primary);
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-submit {
+    width: 100%;
+    min-height: 48px;
+    padding: 12px 18px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--cbi-primary);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-submit:focus-visible,
+  #cbi-recommender-{{ block.id }} input:focus-visible,
+  #cbi-recommender-{{ block.id }} textarea:focus-visible {
+    outline: 2px solid var(--cbi-primary);
+    outline-offset: 3px;
+  }
+
+  @media (max-width: 480px) {
+    #cbi-recommender-{{ block.id }} {
+      padding: 16px 10px;
+    }
+
+    #cbi-recommender-{{ block.id }} .cbi-recommender__inner {
+      padding: 18px 14px;
+      border-radius: 10px;
+    }
+  }
+</style>
+
+<script>
+  (() => {
+    const root = document.getElementById(
+      'cbi-recommender-{{ block.id }}'
+    );
+
+    if (!root || root.dataset.initialized === 'true') return;
+    root.dataset.initialized = 'true';
+
+    const quizId = root.dataset.quizId;
+    const content = root.querySelector('.cbi-recommender__content');
+
+    if (!quizId || !content) return;
+
+    const status = content.querySelector('.cbi-recommender__status');
+    if (status) status.textContent = 'Preparando el cuestionario...';
+
+    // Este endpoint se conectará con la aplicación mediante Shopify App Proxy.
+    fetch('/apps/cbi-market/cuestionario?quiz_id=' + encodeURIComponent(quizId))
+      .then((response) => {
+        if (!response.ok) throw new Error('No se pudo cargar el cuestionario.');
+        return response.json();
+      })
+      .then((data) => {
+        const quiz = data.quiz || data;
+        const questions = quiz.questions || [];
+
+        if (!questions.length) {
+          throw new Error('El cuestionario no tiene preguntas disponibles.');
+        }
+
+        content.replaceChildren();
+
+        const form = document.createElement('form');
+
+        questions.forEach((question, index) => {
+          const fieldset = document.createElement('fieldset');
+          fieldset.className = 'cbi-question';
+
+          const legend = document.createElement('legend');
+          legend.textContent = question.text || question.title ||
+            `Pregunta ${index + 1}`;
+          fieldset.appendChild(legend);
+
+          const type = String(question.type || 'single_choice')
+            .toLowerCase();
+          const options = question.options || [];
+
+          if (type.includes('text') || type.includes('libre')) {
+            const input = document.createElement('textarea');
+            input.name = `question_${question.id}`;
+            input.rows = 3;
+            input.maxLength = 2000;
+            input.required = Boolean(question.required);
+            input.className = 'cbi-text-answer';
+            fieldset.appendChild(input);
+          } else {
+            options.forEach((option) => {
+              const label = document.createElement('label');
+              label.className = 'cbi-answer';
+
+              const input = document.createElement('input');
+              input.type = type.includes('multiple') ||
+                type.includes('varias') ? 'checkbox' : 'radio';
+              input.name = `question_${question.id}`;
+              input.value = option.id ?? option.value ?? option.text ?? '';
+              input.required = Boolean(question.required) &&
+                input.type === 'radio';
+
+              const text = document.createElement('span');
+              text.textContent = option.text || option.label || option.value || '';
+
+              label.append(input, text);
+              fieldset.appendChild(label);
+            });
+          }
+
+          form.appendChild(fieldset);
+        });
+
+        const button = document.createElement('button');
+        button.type = 'submit';
+        button.className = 'cbi-submit';
+        button.textContent = {{ block.settings.button_label | json }};
+        form.appendChild(button);
+
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          content.replaceChildren();
+
+          const message = document.createElement('p');
+          message.textContent =
+            'Tus respuestas están listas. La integración del motor de recomendaciones es el siguiente paso.';
+          content.appendChild(message);
+        });
+
+        content.appendChild(form);
+      })
+      .catch(() => {
+        content.replaceChildren();
+        const message = document.createElement('p');
+        message.textContent =
+          'No fue posible cargar el cuestionario. Verifica la configuración e inténtalo más tarde.';
+        content.appendChild(message);
+      });
+  })();
+</script>
+
+{% schema %}
+{
+  "name": "CBI-Market Recomendador",
+  "target": "section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Título",
+      "default": "Encuentra el producto ideal"
+    },
+    {
+      "type": "textarea",
+      "id": "description",
+      "label": "Descripción",
+      "default": "Responde unas preguntas para descubrir qué producto se adapta mejor a tus necesidades."
+    },
+    {
+      "type": "text",
+      "id": "quiz_id",
+      "label": "ID del cuestionario",
+      "info": "Introduce el identificador del cuestionario configurado en CBI-Market."
+    },
+    {
+      "type": "text",
+      "id": "button_label",
+      "label": "Texto del botón",
+      "default": "Continuar"
+    },
+    {
+      "type": "color",
+      "id": "primary_color",
+      "label": "Color principal",
+      "default": "#5B0F2E"
+    }
+  ]
+}
+{% endschema %}
