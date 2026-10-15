@@ -106,6 +106,72 @@
     outline-offset: 3px;
   }
 
+  #cbi-recommender-{{ block.id }} .cbi-progress-text {
+    margin: 0 0 8px;
+    color: #555;
+    font-size: 0.9rem;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-progress-track {
+    height: 8px;
+    margin-bottom: 24px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: #eee;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-progress-bar {
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--cbi-primary);
+    transition: width 0.2s ease;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-validation-error {
+    color: #b42318;
+    font-size: 0.9rem;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-navigation {
+    display: flex;
+    gap: 12px;
+    margin-top: 20px;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-navigation button {
+    flex: 1;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-back {
+    min-height: 48px;
+    padding: 12px 18px;
+    border: 1px solid var(--cbi-border);
+    border-radius: 8px;
+    background: #fff;
+    color: #222;
+    font: inherit;
+    cursor: pointer;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-summary-item {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--cbi-border);
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-summary-item h4 {
+    margin: 0 0 6px;
+    font-size: 1rem;
+  }
+
+  #cbi-recommender-{{ block.id }} .cbi-summary-item p {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  #cbi-recommender-{{ block.id }} [hidden] {
+    display: none !important;
+  }
   @media (max-width: 480px) {
     #cbi-recommender-{{ block.id }} {
       padding: 16px 10px;
@@ -120,72 +186,91 @@
 
 <script>
   (() => {
-    const root = document.getElementById(
-      'cbi-recommender-{{ block.id }}'
-    );
-
+    const root = document.getElementById('cbi-recommender-{{ block.id }}');
     if (!root || root.dataset.initialized === 'true') return;
     root.dataset.initialized = 'true';
 
     const quizId = root.dataset.quizId;
     const content = root.querySelector('.cbi-recommender__content');
-
     if (!quizId || !content) return;
 
-    const status = content.querySelector('.cbi-recommender__status');
-    if (status) status.textContent = 'Preparando el cuestionario...';
+    const buttonLabel = {{ block.settings.button_label | json }};
+    const endpoint = '/apps/cbi-market/cuestionario?quiz_id=' +
+      encodeURIComponent(quizId);
 
-    // Este endpoint se conectará con la aplicación mediante Shopify App Proxy.
-    fetch('/apps/cbi-market/cuestionario?quiz_id=' + encodeURIComponent(quizId))
-      .then((response) => {
+    fetch(endpoint)
+      .then(response => {
         if (!response.ok) throw new Error('No se pudo cargar el cuestionario.');
         return response.json();
       })
-      .then((data) => {
+      .then(data => {
         const quiz = data.quiz || data;
         const questions = quiz.questions || [];
 
         if (!questions.length) {
-          throw new Error('El cuestionario no tiene preguntas disponibles.');
+          throw new Error('El cuestionario no tiene preguntas.');
         }
 
         content.replaceChildren();
 
         const form = document.createElement('form');
+        form.noValidate = true;
+
+        const progressText = document.createElement('p');
+        progressText.className = 'cbi-progress-text';
+        progressText.setAttribute('aria-live', 'polite');
+
+        const progressTrack = document.createElement('div');
+        progressTrack.className = 'cbi-progress-track';
+        progressTrack.setAttribute('role', 'progressbar');
+        progressTrack.setAttribute('aria-valuemin', '0');
+        progressTrack.setAttribute('aria-valuemax', String(questions.length));
+        progressTrack.setAttribute('aria-valuenow', '1');
+        progressTrack.setAttribute('aria-label', 'Progreso del cuestionario');
+
+        const progressBar = document.createElement('div');
+        progressBar.className = 'cbi-progress-bar';
+        progressTrack.appendChild(progressBar);
+
+        const errorMessage = document.createElement('p');
+        errorMessage.className = 'cbi-validation-error';
+        errorMessage.setAttribute('role', 'alert');
+        errorMessage.hidden = true;
+
+        const fieldsets = [];
 
         questions.forEach((question, index) => {
           const fieldset = document.createElement('fieldset');
           fieldset.className = 'cbi-question';
+          fieldset.hidden = index !== 0;
 
           const legend = document.createElement('legend');
           legend.textContent = question.text || question.title ||
             `Pregunta ${index + 1}`;
           fieldset.appendChild(legend);
 
-          const type = String(question.type || 'single_choice')
-            .toLowerCase();
+          const type = String(question.type || 'single_choice').toLowerCase();
           const options = question.options || [];
+          const isText = type.includes('text') || type.includes('libre');
+          const isMultiple = type.includes('multiple_select') || type.includes('checkbox') || type.includes('varias');
 
-          if (type.includes('text') || type.includes('libre')) {
-            const input = document.createElement('textarea');
-            input.name = `question_${question.id}`;
-            input.rows = 3;
-            input.maxLength = 2000;
-            input.required = Boolean(question.required);
-            input.className = 'cbi-text-answer';
-            fieldset.appendChild(input);
+          if (isText) {
+            const textarea = document.createElement('textarea');
+            textarea.name = `question_${question.id}`;
+            textarea.rows = 3;
+            textarea.maxLength = 2000;
+            textarea.className = 'cbi-text-answer';
+            textarea.setAttribute('aria-label', legend.textContent);
+            fieldset.appendChild(textarea);
           } else {
-            options.forEach((option) => {
+            options.forEach(option => {
               const label = document.createElement('label');
               label.className = 'cbi-answer';
 
               const input = document.createElement('input');
-              input.type = type.includes('multiple') ||
-                type.includes('varias') ? 'checkbox' : 'radio';
+              input.type = isMultiple ? 'checkbox' : 'radio';
               input.name = `question_${question.id}`;
-              input.value = option.id ?? option.value ?? option.text ?? '';
-              input.required = Boolean(question.required) &&
-                input.type === 'radio';
+              input.value = String(option.id ?? option.value ?? option.text ?? '');
 
               const text = document.createElement('span');
               text.textContent = option.text || option.label || option.value || '';
@@ -193,31 +278,181 @@
               label.append(input, text);
               fieldset.appendChild(label);
             });
+
+            if (!options.length) {
+              const emptyMessage = document.createElement('p');
+              emptyMessage.textContent = 'Esta pregunta no tiene opciones disponibles.';
+              fieldset.appendChild(emptyMessage);
+            }
           }
 
           form.appendChild(fieldset);
+          fieldsets.push(fieldset);
         });
 
-        const button = document.createElement('button');
-        button.type = 'submit';
-        button.className = 'cbi-submit';
-        button.textContent = {{ block.settings.button_label | json }};
-        form.appendChild(button);
+        const navigation = document.createElement('div');
+        navigation.className = 'cbi-navigation';
 
-        form.addEventListener('submit', (event) => {
-          event.preventDefault();
-          content.replaceChildren();
+        const backButton = document.createElement('button');
+        backButton.type = 'button';
+        backButton.className = 'cbi-back';
+        backButton.textContent = 'Atrás';
 
-          const message = document.createElement('p');
-          message.textContent =
-            'Tus respuestas están listas. La integración del motor de recomendaciones es el siguiente paso.';
-          content.appendChild(message);
+        const nextButton = document.createElement('button');
+        nextButton.type = 'button';
+        nextButton.className = 'cbi-submit';
+
+        navigation.append(backButton, nextButton);
+
+        const summary = document.createElement('section');
+        summary.className = 'cbi-summary';
+        summary.hidden = true;
+        summary.setAttribute('aria-live', 'polite');
+
+        let currentIndex = 0;
+
+        function getAnswer(question, fieldset) {
+          const type = String(question.type || 'single_choice').toLowerCase();
+
+          if (type.includes('text') || type.includes('libre')) {
+            return fieldset.querySelector('textarea')?.value.trim() || '';
+          }
+
+          const selected = Array.from(
+            fieldset.querySelectorAll('input:checked')
+          );
+
+          const entries = selected.map(input => ({
+            value: input.value,
+            label: input.closest('label')?.querySelector('span')?.textContent
+              || input.value
+          }));
+
+          if (type.includes('multiple_select') || type.includes('checkbox') || type.includes('varias')) {
+            return entries;
+          }
+
+          return entries[0] || null;
+        }
+
+        function hasAnswer(question, fieldset) {
+          const answer = getAnswer(question, fieldset);
+
+          if (Array.isArray(answer)) return answer.length > 0;
+          if (answer && typeof answer === 'object') return true;
+          return typeof answer === 'string' && answer.length > 0;
+        }
+
+        function showQuestion(index) {
+          currentIndex = index;
+
+          fieldsets.forEach((fieldset, i) => {
+            fieldset.hidden = i !== index;
+          });
+
+          const step = index + 1;
+          const percentage = Math.round(step / questions.length * 100);
+
+          progressText.textContent = `Pregunta ${step} de ${questions.length}`;
+          progressTrack.setAttribute('aria-valuenow', String(step));
+          progressBar.style.width = `${percentage}%`;
+
+          backButton.hidden = index === 0;
+          nextButton.textContent = index === questions.length - 1
+            ? 'Finalizar'
+            : (buttonLabel || 'Continuar');
+
+          errorMessage.hidden = true;
+          fieldsets[index].querySelector('input, textarea')?.focus();
+        }
+
+        function showSummary() {
+          summary.replaceChildren();
+
+          const heading = document.createElement('h3');
+          heading.textContent = 'Resumen de tus respuestas';
+          summary.appendChild(heading);
+
+          questions.forEach((question, index) => {
+            const item = document.createElement('div');
+            item.className = 'cbi-summary-item';
+
+            const title = document.createElement('h4');
+            title.textContent = question.text || question.title ||
+              `Pregunta ${index + 1}`;
+
+            const answerText = document.createElement('p');
+            const answer = getAnswer(question, fieldsets[index]);
+
+            if (Array.isArray(answer)) {
+              answerText.textContent = answer.length
+                ? answer.map(entry => entry.label).join(', ')
+                : 'Sin respuesta';
+            } else if (answer && typeof answer === 'object') {
+              answerText.textContent = answer.label;
+            } else {
+              answerText.textContent = answer || 'Sin respuesta';
+            }
+
+            item.append(title, answerText);
+            summary.appendChild(item);
+          });
+
+          const editButton = document.createElement('button');
+          editButton.type = 'button';
+          editButton.className = 'cbi-back';
+          editButton.textContent = 'Revisar respuestas';
+          editButton.addEventListener('click', () => {
+            summary.hidden = true;
+            form.hidden = false;
+            navigation.hidden = false;
+            progressText.hidden = false;
+            progressTrack.hidden = false;
+            showQuestion(0);
+          });
+
+          summary.appendChild(editButton);
+
+          form.hidden = true;
+          navigation.hidden = true;
+          progressText.hidden = true;
+          progressTrack.hidden = true;
+          errorMessage.hidden = true;
+          summary.hidden = false;
+        }
+
+        backButton.addEventListener('click', () => {
+          if (currentIndex > 0) showQuestion(currentIndex - 1);
         });
 
-        content.appendChild(form);
+        nextButton.addEventListener('click', () => {
+          const question = questions[currentIndex];
+          const fieldset = fieldsets[currentIndex];
+
+          if (question.required && !hasAnswer(question, fieldset)) {
+            errorMessage.textContent =
+              'Esta pregunta es obligatoria. Responde antes de continuar.';
+            errorMessage.hidden = false;
+            return;
+          }
+
+          errorMessage.hidden = true;
+
+          if (currentIndex < questions.length - 1) {
+            showQuestion(currentIndex + 1);
+          } else {
+            showSummary();
+          }
+        });
+
+        form.append(progressText, progressTrack, errorMessage);
+        content.append(form, navigation, summary);
+        showQuestion(0);
       })
-      .catch(() => {
+      .catch(error => {
+        console.error('Error en CBI-Market:', error);
         content.replaceChildren();
+
         const message = document.createElement('p');
         message.textContent =
           'No fue posible cargar el cuestionario. Verifica la configuración e inténtalo más tarde.';
