@@ -398,6 +398,90 @@
             summary.appendChild(item);
           });
 
+          const results = document.createElement('section');
+          results.className = 'cbi-candidate-results';
+
+          const resultsHeading = document.createElement('h3');
+          resultsHeading.textContent = 'Productos candidatos';
+          const resultsStatus = document.createElement('p');
+          resultsStatus.textContent = 'Buscando productos...';
+          results.append(resultsHeading, resultsStatus);
+          summary.appendChild(results);
+
+          const answers = questions.flatMap((question, index) =>
+            Array.from(fieldsets[index].querySelectorAll('input:checked'))
+              .map(input => ({
+                questionId: question.id,
+                optionId: input.value
+              }))
+          );
+
+          fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quiz_id: quizId, answers })
+          })
+            .then(response => response.json().then(data => {
+              if (!response.ok) {
+                throw new Error(data.error || 'No se pudieron obtener candidatos.');
+              }
+              return data;
+            }))
+            .then(data => {
+              const candidates =
+                data.candidates || data.products || data.recommendations || [];
+
+              results.replaceChildren(resultsHeading);
+
+              if (!candidates.length) {
+                const emptyMessage = document.createElement('p');
+                emptyMessage.textContent =
+                  'No encontramos productos candidatos con esas respuestas.';
+                results.appendChild(emptyMessage);
+                return;
+              }
+
+              candidates.forEach(product => {
+                const item = document.createElement('article');
+                const title = document.createElement('h4');
+                title.textContent = product.title || 'Producto sin título';
+                item.appendChild(title);
+
+                const details = document.createElement('p');
+                const attributes = [
+                  product.productType,
+                  product.vendor
+                ].filter(Boolean);
+
+                const price = product.price !== null && product.price !== undefined ? { amount: product.price, currencyCode: product.currencyCode } : null;
+                if (price?.amount) {
+                  attributes.push(
+                    price.amount + ' ' + (price.currencyCode || '')
+                  );
+                }
+
+                details.textContent = attributes.join(' · ');
+                if (details.textContent) item.appendChild(details);
+
+                const url = product.url || product.onlineStoreUrl ||
+                  (product.handle ? '/products/' + product.handle : '');
+
+                if (url) {
+                  const link = document.createElement('a');
+                  link.href = url;
+                  link.textContent = 'Ver producto';
+                  item.appendChild(link);
+                }
+
+                results.appendChild(item);
+              });
+            })
+            .catch(error => {
+              console.error('Error al obtener candidatos:', error);
+              resultsStatus.textContent =
+                'No se pudieron cargar los candidatos. Inténtalo de nuevo.';
+            });
+
           const editButton = document.createElement('button');
           editButton.type = 'button';
           editButton.className = 'cbi-back';
