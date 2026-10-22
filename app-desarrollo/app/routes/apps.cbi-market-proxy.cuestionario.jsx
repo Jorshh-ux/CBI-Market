@@ -1,5 +1,6 @@
 import prisma from "../db.server";
 import { authenticate, unauthenticated } from "../shopify.server";
+import { rankCandidatesWithAI } from "../services/ai-recommendations.server";
 
 function normalize(value = "") {
   return String(value)
@@ -57,18 +58,14 @@ function scoreProducts(products, selectedOptions) {
             price <= lowLimit
           ) {
             score += 2;
-            reasons.push(
-              "Precio dentro del segmento económico del catálogo"
-            );
+            reasons.push("Precio dentro del segmento económico del catálogo");
           } else if (
             combined.includes("premium") &&
             highLimit !== null &&
             price >= highLimit
           ) {
             score += 2;
-            reasons.push(
-              "Precio dentro del segmento alto del catálogo"
-            );
+            reasons.push("Precio dentro del segmento alto del catálogo");
           }
         }
 
@@ -78,30 +75,18 @@ function scoreProducts(products, selectedOptions) {
       // Filtro por nivel
       if (question.includes("nivel")) {
         const levels = {
-          principiante: [
-            "principiante",
-            "beginner",
-            "iniciacion",
-          ],
+          principiante: ["principiante", "beginner", "iniciacion"],
           intermedio: ["intermedio", "intermediate"],
-          avanzado: [
-            "avanzado",
-            "advanced",
-            "experto",
-            "expert",
-          ],
+          avanzado: ["avanzado", "advanced", "experto", "expert"],
         };
 
-       const selectedLevel = Object.entries(levels).find(
-  ([level, aliases]) =>
-    [level, ...aliases].some((word) => combined.includes(word))
-)?.[0];
+        const selectedLevel = Object.entries(levels).find(([level, aliases]) =>
+          [level, ...aliases].some((word) => combined.includes(word)),
+        )?.[0];
 
         if (
           selectedLevel &&
-          levels[selectedLevel].some((word) =>
-            searchable.includes(word)
-          )
+          levels[selectedLevel].some((word) => searchable.includes(word))
         ) {
           score += 2;
           reasons.push(`Coincidencia de nivel: ${selectedLevel}`);
@@ -111,10 +96,7 @@ function scoreProducts(products, selectedOptions) {
       }
 
       // Filtro por tipo de snowboard
-      if (
-        question.includes("snowboard") ||
-        question.includes("tipo")
-      ) {
+      if (question.includes("snowboard") || question.includes("tipo")) {
         const typeFields = [
           normalize(product.title),
           normalize(product.productType),
@@ -123,23 +105,20 @@ function scoreProducts(products, selectedOptions) {
 
         const words = [
           ...new Set(
-            combined.split(/\s+/).filter(
-              (word) =>
-                word.length >= 3 &&
-                !["buscas", "snowboard"].includes(word)
-            )
+            combined
+              .split(/\s+/)
+              .filter(
+                (word) =>
+                  word.length >= 3 && !["buscas", "snowboard"].includes(word),
+              ),
           ),
         ];
 
-        const matched = words.filter((word) =>
-          typeFields.includes(word)
-        );
+        const matched = words.filter((word) => typeFields.includes(word));
 
         if (matched.length > 0) {
           score += matched.length;
-          reasons.push(
-            `Coincidencia de tipo: ${matched.join(", ")}`
-          );
+          reasons.push(`Coincidencia de tipo: ${matched.join(", ")}`);
         }
 
         continue;
@@ -148,21 +127,20 @@ function scoreProducts(products, selectedOptions) {
 
     return {
       id: product.id,
+      availableForSale: product.availableForSale === true,
       title: product.title,
       productType: product.productType || "",
       vendor: product.vendor || "",
       tags: product.tags || [],
-      price:
-        product.priceRangeV2?.minVariantPrice?.amount ?? null,
-      currencyCode:
-        product.priceRangeV2?.minVariantPrice?.currencyCode ?? null,
+      price: product.priceRangeV2?.minVariantPrice?.amount ?? null,
+      currencyCode: product.priceRangeV2?.minVariantPrice?.currencyCode ?? null,
       url: product.onlineStoreUrl || null,
       score,
       reasons: [...new Set(reasons)],
     };
   });
 
-   return scored
+  return scored
     .filter((product) => product.score > 0)
     .sort((a, b) => b.score - a.score);
 }
@@ -173,7 +151,7 @@ export async function loader({ request }) {
     if (!session?.shop) {
       return Response.json(
         { error: "No se pudo identificar la tienda." },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -188,7 +166,7 @@ export async function loader({ request }) {
     if (!storeSettings) {
       return Response.json(
         { error: "Esta tienda todavía no tiene un cuestionario configurado." },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -212,7 +190,7 @@ export async function loader({ request }) {
     if (!quiz) {
       return Response.json(
         { error: "No se encontró un cuestionario activo." },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -241,7 +219,7 @@ export async function loader({ request }) {
 
     return Response.json(
       { error: "No fue posible cargar el cuestionario." },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
@@ -249,10 +227,7 @@ export async function loader({ request }) {
 export async function action({ request }) {
   try {
     if (request.method !== "POST") {
-      return Response.json(
-        { error: "Método no permitido." },
-        { status: 405 }
-      );
+      return Response.json({ error: "Método no permitido." }, { status: 405 });
     }
 
     const { session } = await authenticate.public.appProxy(request);
@@ -260,7 +235,7 @@ export async function action({ request }) {
     if (!session?.shop) {
       return Response.json(
         { error: "No se pudo identificar la tienda." },
-        { status: 401 }
+        { status: 401 },
       );
     }
 
@@ -276,7 +251,7 @@ export async function action({ request }) {
     ) {
       return Response.json(
         { error: "El cuestionario o las respuestas no son válidos." },
-        { status: 400 }
+        { status: 400 },
       );
     }
 
@@ -288,7 +263,7 @@ export async function action({ request }) {
     if (!storeSettings) {
       return Response.json(
         { error: "No se encontró la configuración de la tienda." },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -308,7 +283,7 @@ export async function action({ request }) {
     if (!quiz) {
       return Response.json(
         { error: "El cuestionario no existe o está inactivo." },
-        { status: 404 }
+        { status: 404 },
       );
     }
 
@@ -321,26 +296,27 @@ export async function action({ request }) {
       ) {
         return Response.json(
           { error: "Hay una respuesta con formato inválido." },
-          { status: 400 }
+          { status: 400 },
         );
       }
 
       const question = quiz.questions.find(
-        (item) => item.id === answer.questionId
+        (item) => item.id === answer.questionId,
       );
 
       const option = question?.options.find(
-        (item) => item.id === answer.optionId
+        (item) => item.id === answer.optionId,
       );
 
       if (!question || !option) {
         return Response.json(
           { error: "Una opción no pertenece a este cuestionario." },
-          { status: 400 }
+          { status: 400 },
         );
       }
 
       selectedOptions.push({
+        questionId: question.id,
         question: question.text,
         label: option.label,
         value: option.value,
@@ -354,7 +330,7 @@ export async function action({ request }) {
       ) {
         return Response.json(
           { error: "Responde todas las preguntas obligatorias." },
-          { status: 400 }
+          { status: 400 },
         );
       }
     }
@@ -367,6 +343,7 @@ export async function action({ request }) {
           products(first: 50) {
             nodes {
               id
+              availableForSale
               title
               handle
               productType
@@ -381,41 +358,94 @@ export async function action({ request }) {
               }
             }
           }
-        }`
+        }`,
     );
 
     const result = await response.json();
 
     if (result.errors?.length || !result.data?.products?.nodes) {
-      console.error("Error de Shopify al consultar productos:", result.errors);
+      console.error(
+        "Error de Shopify al consultar productos:",
+        JSON.stringify(result.errors ?? [], null, 2),
+      );
+
       return Response.json(
-        { error: "No fue posible consultar el catálogo de productos." },
-        { status: 502 }
+        { error: "No fue posible consultar los productos." },
+        { status: 502 },
       );
     }
 
-    const candidates = scoreProducts(
-      result.data.products.nodes,
-      selectedOptions
-    ).slice(
-      0,
-      Math.min(5, Math.max(1, storeSettings.recommendationLimit || 3))
+    const availableProducts = result.data.products.nodes.filter(
+      (product) => product.availableForSale === true,
     );
+
+    let candidates = scoreProducts(availableProducts, selectedOptions).slice(
+      0,
+      Math.min(5, Math.max(1, storeSettings.recommendationLimit || 3)),
+    );
+
+    let engine = "v1";
+
+    try {
+      const aiResult = await rankCandidatesWithAI({
+        answers: selectedOptions.map((answer) => ({
+          question_id: answer.questionId,
+          answer: `${answer.question}: ${answer.label} ${answer.value}`.trim(),
+        })),
+        candidates,
+      });
+
+      if (aiResult?.recommendations?.length > 0) {
+        const candidatesById = new Map(
+          candidates.map((candidate) => [candidate.id, candidate]),
+        );
+
+        const aiCandidates = aiResult.recommendations
+          .map((recommendation) => {
+            const candidate = candidatesById.get(recommendation.product_id);
+
+            if (!candidate) {
+              return null;
+            }
+
+            return {
+              ...candidate,
+              score: recommendation.score,
+              priority: recommendation.priority,
+              reasons: [recommendation.reason],
+            };
+          })
+          .filter(Boolean);
+
+        if (aiCandidates.length > 0) {
+          candidates = aiCandidates;
+          engine = "openai";
+        }
+      }
+    } catch (error) {
+      console.error("Error de IA; se conserva Motor V1:", {
+        name: error?.name,
+      });
+    }
 
     return Response.json({
       quizId: quiz.id,
       count: candidates.length,
       candidates,
-      message: candidates.length
-        ? "Candidatos encontrados mediante reglas, sin inteligencia artificial."
-        : "No se encontraron coincidencias suficientes en los primeros 50 productos del catálogo.",
+      engine,
+      message:
+        engine === "openai"
+          ? "Recomendaciones generadas con IA y validadas contra los candidatos."
+          : candidates.length
+            ? "Candidatos encontrados mediante el Motor V1."
+            : "No se encontraron coincidencias suficientes en los primeros 50 productos del catálogo.",
     });
   } catch (error) {
     console.error("Error en el motor de recomendaciones:", error);
 
     return Response.json(
       { error: "No fue posible generar los productos candidatos." },
-      { status: 500 }
+      { status: 500 },
     );
   }
 }
