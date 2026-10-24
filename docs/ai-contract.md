@@ -51,7 +51,7 @@ Los nombres anteriores pertenecen al contrato interno de CBI-Market. El backend 
 
 No se enviarán credenciales, datos personales innecesarios ni el objeto completo del producto.
 
-**Estado de implementación:** el Motor V1 actual obtiene `id`, `title`, `productType`, `vendor`, `tags` y el precio mínimo mediante `priceRangeV2.minVariantPrice`. El backend deberá mapear estos campos al contrato interno (`product_id`, `product_type`, `currency`) y comprobar la disponibilidad mediante el campo correspondiente de Shopify antes de preparar el payload para IA. Estas transformaciones y validaciones son requisitos pendientes, no funcionalidades ya implementadas.
+**Estado de implementación:** la integración está conectada en el backend de la app. El servicio mapea los datos de Shopify (`id`, `title`, `productType`, `vendor`, `tags` y `priceRangeV2.minVariantPrice`) al payload interno, filtra productos disponibles y envía sólo las respuestas y candidatos al modelo. La respuesta estructurada se valida contra los IDs candidatos y la disponibilidad de los productos recomendados se vuelve a consultar antes de devolverlos a la tienda. Si falta la clave del servidor o falla la llamada, se conserva el resultado del Motor V1. Esto documenta el flujo implementado; la llamada real depende de configurar `OPENAI_API_KEY` y probarlo en la tienda de desarrollo.
 
 La consulta actual utiliza `products(first: 50)`, por lo que el conjunto evaluado está limitado a los primeros 50 productos devueltos. La futura integración no deberá asumir que representa el catálogo completo.
 

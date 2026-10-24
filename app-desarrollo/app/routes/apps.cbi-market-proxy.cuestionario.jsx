@@ -1,149 +1,117 @@
 import prisma from "../db.server";
 import { authenticate, unauthenticated } from "../shopify.server";
 import { rankCandidatesWithAI } from "../services/ai-recommendations.server";
+import {
+  assessRecommendationQuality,
+  prepareRecommendationCandidates,
+} from "../services/product-recommendations.server";
 
-function normalize(value = "") {
-  return String(value)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, " ")
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+async function getAvailableProductIds(admin, productIds) {
+  if (!productIds.length) return new Set();
 
-function getPrice(product) {
-  const amount = Number(product.priceRangeV2?.minVariantPrice?.amount);
-  return Number.isFinite(amount) ? amount : null;
-}
-
-function scoreProducts(products, selectedOptions) {
-  const prices = products
-    .map(getPrice)
-    .filter((price) => price !== null)
-    .sort((a, b) => a - b);
-
-  const lowLimit = prices.length
-    ? prices[Math.floor((prices.length - 1) / 3)]
-    : null;
-
-  const highLimit = prices.length
-    ? prices[Math.floor(((prices.length - 1) * 2) / 3)]
-    : null;
-
-  const scored = products.map((product) => {
-    const fields = [
-      product.title,
-      product.productType,
-      product.vendor,
-      ...(product.tags || []),
-    ].map(normalize);
-
-    const searchable = fields.join(" ");
-    let score = 0;
-    const reasons = [];
-
-    for (const answer of selectedOptions) {
-      const question = normalize(answer.question);
-      const combined = normalize(`${answer.label} ${answer.value}`);
-
-      // Filtro por presupuesto
-      if (question.includes("presupuesto")) {
-        const price = getPrice(product);
-
-        if (price !== null && lowLimit !== null) {
-          if (
-            /\b(economico|economica|barato|barata)\b/.test(combined) &&
-            price <= lowLimit
-          ) {
-            score += 2;
-            reasons.push("Precio dentro del segmento económico del catálogo");
-          } else if (
-            combined.includes("premium") &&
-            highLimit !== null &&
-            price >= highLimit
-          ) {
-            score += 2;
-            reasons.push("Precio dentro del segmento alto del catálogo");
+  const response = await admin.graphql(
+    `#graphql
+      query VerifyProductAvailability($ids: [ID!]!) {
+        nodes(ids: $ids) {
+          ... on Product {
+            id
+            variants(first: 250) {
+              nodes {
+                availableForSale
+              }
+            }
           }
         }
+      }`,
+    { variables: { ids: productIds } },
+  );
+  const result = await response.json();
 
-        continue;
-      }
+  if (result.errors?.length || !Array.isArray(result.data?.nodes)) {
+    console.error(
+      "Error de Shopify al verificar disponibilidad:",
+      JSON.stringify(result.errors ?? [], null, 2),
+    );
+    throw new Error("PRODUCT_AVAILABILITY_VERIFICATION_FAILED");
+  }
 
-      // Filtro por nivel
-      if (question.includes("nivel")) {
-        const levels = {
-          principiante: ["principiante", "beginner", "iniciacion"],
-          intermedio: ["intermedio", "intermediate"],
-          avanzado: ["avanzado", "advanced", "experto", "expert"],
-        };
-
-        const selectedLevel = Object.entries(levels).find(([level, aliases]) =>
-          [level, ...aliases].some((word) => combined.includes(word)),
-        )?.[0];
-
-        if (
-          selectedLevel &&
-          levels[selectedLevel].some((word) => searchable.includes(word))
-        ) {
-          score += 2;
-          reasons.push(`Coincidencia de nivel: ${selectedLevel}`);
-        }
-
-        continue;
-      }
-
-      // Filtro por tipo de snowboard
-      if (question.includes("snowboard") || question.includes("tipo")) {
-        const typeFields = [
-          normalize(product.title),
-          normalize(product.productType),
-          ...(product.tags || []).map(normalize),
-        ].join(" ");
-
-        const words = [
-          ...new Set(
-            combined
-              .split(/\s+/)
-              .filter(
-                (word) =>
-                  word.length >= 3 && !["buscas", "snowboard"].includes(word),
-              ),
-          ),
-        ];
-
-        const matched = words.filter((word) => typeFields.includes(word));
-
-        if (matched.length > 0) {
-          score += matched.length;
-          reasons.push(`Coincidencia de tipo: ${matched.join(", ")}`);
-        }
-
-        continue;
-      }
-    } // Esta llave cierra el for de selectedOptions.
-
-    return {
-      id: product.id,
-      availableForSale: product.availableForSale === true,
-      title: product.title,
-      productType: product.productType || "",
-      vendor: product.vendor || "",
-      tags: product.tags || [],
-      price: product.priceRangeV2?.minVariantPrice?.amount ?? null,
-      currencyCode: product.priceRangeV2?.minVariantPrice?.currencyCode ?? null,
-      url: product.onlineStoreUrl || null,
-      score,
-      reasons: [...new Set(reasons)],
-    };
-  });
-
-  return scored
-    .filter((product) => product.score > 0)
-    .sort((a, b) => b.score - a.score);
+  return new Set(
+    result.data.nodes
+      .filter((product) =>
+        product?.variants?.nodes?.some((variant) => variant.availableForSale),
+      )
+      .map((product) => product.id),
+  );
 }
+
+async function getStoreProducts(admin) {
+  const products = [];
+  let after = null;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(
+      `#graphql
+        query RecommendationCandidates($after: String) {
+          products(
+            first: 250
+            after: $after
+            query: "published_status:published"
+          ) {
+            nodes {
+              id
+              status
+              title
+              featuredImage {
+                url
+                altText
+              }
+              handle
+              productType
+              vendor
+              tags
+              onlineStoreUrl
+              priceRangeV2 {
+                minVariantPrice {
+                  amount
+                  currencyCode
+                }
+              }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }`,
+      { variables: { after } },
+    );
+    const result = await response.json();
+
+    if (
+      result.errors?.length ||
+      !Array.isArray(result.data?.products?.nodes) ||
+      !result.data?.products?.pageInfo
+    ) {
+      console.error(
+        "Error de Shopify al consultar productos:",
+        JSON.stringify(result.errors ?? [], null, 2),
+      );
+      throw new Error("SHOPIFY_PRODUCT_QUERY_FAILED");
+    }
+
+    products.push(...result.data.products.nodes);
+    hasNextPage = result.data.products.pageInfo.hasNextPage;
+    after = result.data.products.pageInfo.endCursor;
+
+    if (hasNextPage && !after) {
+      throw new Error("SHOPIFY_PRODUCT_CURSOR_MISSING");
+    }
+  }
+
+  return products;
+}
+
 export async function loader({ request }) {
   try {
     const { session } = await authenticate.public.appProxy(request);
@@ -246,7 +214,6 @@ export async function action({ request }) {
     if (
       typeof quizId !== "string" ||
       !Array.isArray(answers) ||
-      answers.length === 0 ||
       answers.length > 50
     ) {
       return Response.json(
@@ -290,10 +257,7 @@ export async function action({ request }) {
     const selectedOptions = [];
 
     for (const answer of answers) {
-      if (
-        typeof answer?.questionId !== "string" ||
-        typeof answer?.optionId !== "string"
-      ) {
+      if (typeof answer?.questionId !== "string") {
         return Response.json(
           { error: "Hay una respuesta con formato inválido." },
           { status: 400 },
@@ -304,11 +268,48 @@ export async function action({ request }) {
         (item) => item.id === answer.questionId,
       );
 
+      if (!question) {
+        return Response.json(
+          { error: "La pregunta no pertenece a este cuestionario." },
+          { status: 400 },
+        );
+      }
+
+      if (question.type === "TEXT") {
+        const textAnswer =
+          typeof answer.textAnswer === "string" ? answer.textAnswer.trim() : "";
+
+        if (textAnswer.length > 2000) {
+          return Response.json(
+            { error: "La respuesta de texto supera el límite permitido." },
+            { status: 400 },
+          );
+        }
+
+        if (textAnswer) {
+          selectedOptions.push({
+            questionId: question.id,
+            question: question.text,
+            label: textAnswer,
+            value: textAnswer,
+          });
+        }
+
+        continue;
+      }
+
+      if (typeof answer.optionId !== "string") {
+        return Response.json(
+          { error: "Hay una respuesta con formato inválido." },
+          { status: 400 },
+        );
+      }
+
       const option = question?.options.find(
         (item) => item.id === answer.optionId,
       );
 
-      if (!question || !option) {
+      if (!option) {
         return Response.json(
           { error: "Una opción no pertenece a este cuestionario." },
           { status: 400 },
@@ -326,7 +327,7 @@ export async function action({ request }) {
     for (const question of quiz.questions) {
       if (
         question.required &&
-        !answers.some((answer) => answer.questionId === question.id)
+        !selectedOptions.some((answer) => answer.questionId === question.id)
       ) {
         return Response.json(
           { error: "Responde todas las preguntas obligatorias." },
@@ -337,52 +338,72 @@ export async function action({ request }) {
 
     const { admin } = await unauthenticated.admin(session.shop);
 
-    const response = await admin.graphql(
-      `#graphql
-        query RecommendationCandidates {
-          products(first: 50) {
-            nodes {
-              id
-              availableForSale
-              title
-              handle
-              productType
-              vendor
-              tags
-              onlineStoreUrl
-              priceRangeV2 {
-                minVariantPrice {
-                  amount
-                  currencyCode
-                }
-              }
-            }
-          }
-        }`,
-    );
-
-    const result = await response.json();
-
-    if (result.errors?.length || !result.data?.products?.nodes) {
-      console.error(
-        "Error de Shopify al consultar productos:",
-        JSON.stringify(result.errors ?? [], null, 2),
-      );
-
+    let catalogProducts;
+    try {
+      catalogProducts = await getStoreProducts(admin);
+    } catch (error) {
+      console.error("No se pudo cargar el catálogo de Shopify:", {
+        name: error?.name,
+      });
       return Response.json(
         { error: "No fue posible consultar los productos." },
         { status: 502 },
       );
     }
 
-    const availableProducts = result.data.products.nodes.filter(
-      (product) => product.availableForSale === true,
+    const activeProducts = catalogProducts.filter(
+      (product) => product.status === "ACTIVE",
+    );
+    // No usamos onlineStoreUrl para detectar publicación: Shopify puede
+    // devolverlo como null en tiendas de desarrollo protegidas por contraseña.
+    const availableProducts = activeProducts;
+    const {
+      eligibleProducts,
+      ruleCandidates,
+      aiCandidatePool,
+    } = prepareRecommendationCandidates(availableProducts, selectedOptions);
+
+    const recommendationLimit = Math.min(
+      3,
+      Math.max(1, storeSettings.recommendationLimit || 3),
     );
 
-    let candidates = scoreProducts(availableProducts, selectedOptions).slice(
-      0,
-      Math.min(5, Math.max(1, storeSettings.recommendationLimit || 3)),
-    );
+    let availableProductIds;
+
+    try {
+      availableProductIds = await getAvailableProductIds(
+        admin,
+        aiCandidatePool.map((candidate) => candidate.id),
+      );
+    } catch (error) {
+      console.error("No se pudo confirmar el inventario de los candidatos:", {
+        name: error?.name,
+      });
+      return Response.json(
+        { error: "No se pudo verificar la disponibilidad de los productos." },
+        { status: 502 },
+      );
+    }
+
+    const availableAiCandidates = aiCandidatePool
+      .filter((candidate) => availableProductIds.has(candidate.id))
+      .map((candidate) => ({ ...candidate, availableForSale: true }));
+    console.info("Catálogo de recomendaciones consultado:", {
+      total: catalogProducts.length,
+      activos: activeProducts.length,
+      publicadosEnTienda: availableProducts.length,
+      elegiblesPorCategoriaYDatos: eligibleProducts.length,
+      candidatosEvaluados: aiCandidatePool.length,
+      disponiblesParaVenta: availableAiCandidates.length,
+      coincidenciasMotorV1: ruleCandidates.length,
+    });
+    let candidates = ruleCandidates
+      .filter((candidate) => availableProductIds.has(candidate.id))
+      .slice(0, recommendationLimit)
+      .map((candidate) => ({ ...candidate, availableForSale: true }));
+    if (candidates.length === 0) {
+      candidates = availableAiCandidates.slice(0, recommendationLimit);
+    }
 
     let engine = "v1";
 
@@ -392,16 +413,26 @@ export async function action({ request }) {
           question_id: answer.questionId,
           answer: `${answer.question}: ${answer.label} ${answer.value}`.trim(),
         })),
-        candidates,
+        candidates: availableAiCandidates,
       });
 
       if (aiResult?.recommendations?.length > 0) {
+        const verifiedProductIds = await getAvailableProductIds(
+          admin,
+          aiResult.recommendations.map(
+            (recommendation) => recommendation.product_id,
+          ),
+        );
         const candidatesById = new Map(
-          candidates.map((candidate) => [candidate.id, candidate]),
+          availableAiCandidates.map((candidate) => [candidate.id, candidate]),
         );
 
         const aiCandidates = aiResult.recommendations
           .map((recommendation) => {
+            if (!verifiedProductIds.has(recommendation.product_id)) {
+              return null;
+            }
+
             const candidate = candidatesById.get(recommendation.product_id);
 
             if (!candidate) {
@@ -412,10 +443,11 @@ export async function action({ request }) {
               ...candidate,
               score: recommendation.score,
               priority: recommendation.priority,
-              reasons: [recommendation.reason],
+              reasons: [...new Set([...candidate.reasons, recommendation.reason])],
             };
           })
-          .filter(Boolean);
+          .filter(Boolean)
+          .slice(0, recommendationLimit);
 
         if (aiCandidates.length > 0) {
           candidates = aiCandidates;
@@ -425,6 +457,26 @@ export async function action({ request }) {
     } catch (error) {
       console.error("Error de IA; se conserva Motor V1:", {
         name: error?.name,
+      });
+    }
+
+    const qualityIssues = assessRecommendationQuality({
+      recommendations: candidates,
+      answers: selectedOptions,
+      engine,
+    });
+    if (qualityIssues.length) {
+      console.warn("RECOMMENDATION_QUALITY_REVIEW", {
+        quizId: quiz.id,
+        engine,
+        issues: qualityIssues,
+        recommendations: candidates.map((candidate) => ({
+          productId: candidate.id,
+          title: candidate.title,
+          price: candidate.price,
+          score: candidate.score,
+          reasons: candidate.reasons,
+        })),
       });
     }
 
@@ -438,7 +490,13 @@ export async function action({ request }) {
           ? "Recomendaciones generadas con IA y validadas contra los candidatos."
           : candidates.length
             ? "Candidatos encontrados mediante el Motor V1."
-            : "No se encontraron coincidencias suficientes en los primeros 50 productos del catálogo.",
+            : availableProducts.length === 0
+              ? "No hay productos activos publicados en el canal Tienda online."
+              : eligibleProducts.length === 0
+                ? "No hay productos de esta categoría con imagen y precio para recomendar."
+                : availableAiCandidates.length === 0
+                ? "Los productos publicados no tienen variantes disponibles para venta."
+                : "No se pudo obtener una recomendación; revisa la configuración de la IA.",
     });
   } catch (error) {
     console.error("Error en el motor de recomendaciones:", error);
