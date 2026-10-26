@@ -59,6 +59,12 @@ export default function Index() {
 
   return (
     <s-page heading="Catálogo de productos">
+      <s-section heading="Configuración del recomendador">
+        <s-paragraph>
+          Ajusta cuántos productos recomienda el cuestionario, el mensaje inicial y las reglas de disponibilidad y presupuesto.
+        </s-paragraph>
+        <s-link href="/app/settings">Abrir configuración</s-link>
+      </s-section>
       <s-section heading="Productos reales de Shopify">
         <s-paragraph>
           Estos productos se obtienen directamente desde Shopify mediante la
