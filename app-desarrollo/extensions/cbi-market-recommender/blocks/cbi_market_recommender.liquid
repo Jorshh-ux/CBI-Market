@@ -105,6 +105,11 @@
     font-weight: 700;
   }
 
+  #cbi-recommender-{{ block.id }} .cbi-product-availability {
+    color: #8a1c1c;
+    font-weight: 700;
+  }
+
   #cbi-recommender-{{ block.id }} .cbi-product-link {
     display: inline-flex;
     align-items: center;
@@ -227,6 +232,7 @@
     if (!quizId || !content) return;
 
     const buttonLabel = {{ block.settings.button_label | json }};
+    const description = root.querySelector('.cbi-recommender__description');
     const endpoint = '/apps/cbi-market/cuestionario?quiz_id=' +
       encodeURIComponent(quizId);
 
@@ -238,6 +244,9 @@
       .then(data => {
         const quiz = data.quiz || data;
         const questions = quiz.questions || [];
+        if (description && data.settings?.welcomeMessage) {
+          description.textContent = data.settings.welcomeMessage;
+        }
 
         if (!questions.length) {
           throw new Error('El cuestionario no tiene preguntas.');
@@ -525,6 +534,13 @@
                   price.textContent = 'Precio no disponible';
                 }
                 item.appendChild(price);
+
+                if (product.availableForSale === false) {
+                  const availability = document.createElement('p');
+                  availability.className = 'cbi-product-availability';
+                  availability.textContent = 'Agotado';
+                  item.appendChild(availability);
+                }
 
                 const reason = document.createElement('p');
                 reason.textContent = Array.isArray(product.reasons) && product.reasons.length

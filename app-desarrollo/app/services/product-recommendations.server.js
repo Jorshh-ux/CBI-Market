@@ -173,12 +173,43 @@ function buildAiFallbackCandidates(products, selectedOptions, limit = 3) {
     .map(({ product }) => product);
 }
 
-export function prepareRecommendationCandidates(products, selectedOptions) {
+function applyBudgetPreference(candidates, fullCatalog, selectedOptions, respectBudget) {
+  if (!respectBudget) return candidates;
+
+  const answer = selectedOptions.find((item) =>
+    normalize(item.question).includes("presupuesto"),
+  );
+  if (!answer) return candidates;
+
+  const budget = normalize(`${answer.label} ${answer.value}`);
+  const prices = fullCatalog.map(getPrice).filter((price) => price !== null).sort((a, b) => a - b);
+  if (prices.length < 3) return candidates;
+
+  const lowLimit = prices[Math.floor((prices.length - 1) / 3)];
+  const highLimit = prices[Math.floor(((prices.length - 1) * 2) / 3)];
+  let matches = null;
+  if (/\b(economico|economica|barato|barata)\b/.test(budget)) {
+    matches = candidates.filter((product) => getPrice(product) <= lowLimit);
+  } else if (/\b(premium|caro|cara)\b/.test(budget)) {
+    matches = candidates.filter((product) => getPrice(product) >= highLimit);
+  } else if (/\b(equilibrado|equilibrada|medio|media)\b/.test(budget)) {
+    matches = candidates.filter((product) => getPrice(product) > lowLimit && getPrice(product) <= highLimit);
+  }
+
+  // Si el catálogo no tiene productos dentro del segmento elegido, conserva
+  // candidatos útiles en vez de devolver una pantalla vacía.
+  return matches?.length ? matches : candidates;
+}
+
+export function prepareRecommendationCandidates(products, selectedOptions, settings = {}) {
   const eligibleProducts = filterProductsForAnswers(products, selectedOptions);
+  const respectBudget = settings.respectBudget !== false;
+  const ruleCandidates = scoreProducts(eligibleProducts, selectedOptions);
+  const aiCandidatePool = buildAiFallbackCandidates(eligibleProducts, selectedOptions, 50);
   return {
     eligibleProducts,
-    ruleCandidates: scoreProducts(eligibleProducts, selectedOptions).slice(0, 3),
-    aiCandidatePool: buildAiFallbackCandidates(eligibleProducts, selectedOptions, 50),
+    ruleCandidates: applyBudgetPreference(ruleCandidates, eligibleProducts, selectedOptions, respectBudget).slice(0, 3),
+    aiCandidatePool: applyBudgetPreference(aiCandidatePool, eligibleProducts, selectedOptions, respectBudget),
   };
 }
 

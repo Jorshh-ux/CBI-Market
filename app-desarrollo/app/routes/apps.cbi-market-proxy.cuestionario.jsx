@@ -6,8 +6,8 @@ import {
   prepareRecommendationCandidates,
 } from "../services/product-recommendations.server";
 
-async function getAvailableProductIds(admin, productIds) {
-  if (!productIds.length) return new Set();
+async function getProductAvailability(admin, productIds) {
+  if (!productIds.length) return new Map();
 
   const response = await admin.graphql(
     `#graphql
@@ -35,12 +35,13 @@ async function getAvailableProductIds(admin, productIds) {
     throw new Error("PRODUCT_AVAILABILITY_VERIFICATION_FAILED");
   }
 
-  return new Set(
+  return new Map(
     result.data.nodes
-      .filter((product) =>
-        product?.variants?.nodes?.some((variant) => variant.availableForSale),
-      )
-      .map((product) => product.id),
+      .filter(Boolean)
+      .map((product) => [
+        product.id,
+        product.variants?.nodes?.some((variant) => variant.availableForSale) || false,
+      ]),
   );
 }
 
@@ -162,7 +163,13 @@ export async function loader({ request }) {
       );
     }
 
+    const settings = await prisma.storeSettings.findUnique({
+      where: { shopDomain: session.shop },
+      select: { welcomeMessage: true },
+    });
+
     return Response.json({
+      settings: { welcomeMessage: settings?.welcomeMessage || "" },
       quiz: {
         id: quiz.id,
         title: quiz.title,
@@ -224,7 +231,13 @@ export async function action({ request }) {
 
     const storeSettings = await prisma.storeSettings.findUnique({
       where: { shopDomain: session.shop },
-      select: { id: true, recommendationLimit: true },
+      select: {
+        id: true,
+        recommendationLimit: true,
+        respectBudget: true,
+        outOfStockBehavior: true,
+        prioritizeAvailability: true,
+      },
     });
 
     if (!storeSettings) {
@@ -361,7 +374,9 @@ export async function action({ request }) {
       eligibleProducts,
       ruleCandidates,
       aiCandidatePool,
-    } = prepareRecommendationCandidates(availableProducts, selectedOptions);
+    } = prepareRecommendationCandidates(availableProducts, selectedOptions, {
+      respectBudget: storeSettings.respectBudget,
+    });
 
     const recommendationLimit = Math.min(
       3,
@@ -371,7 +386,7 @@ export async function action({ request }) {
     let availableProductIds;
 
     try {
-      availableProductIds = await getAvailableProductIds(
+      availableProductIds = await getProductAvailability(
         admin,
         aiCandidatePool.map((candidate) => candidate.id),
       );
@@ -386,7 +401,7 @@ export async function action({ request }) {
     }
 
     const availableAiCandidates = aiCandidatePool
-      .filter((candidate) => availableProductIds.has(candidate.id))
+      .filter((candidate) => availableProductIds.get(candidate.id) === true)
       .map((candidate) => ({ ...candidate, availableForSale: true }));
     console.info("Catálogo de recomendaciones consultado:", {
       total: catalogProducts.length,
@@ -398,7 +413,7 @@ export async function action({ request }) {
       coincidenciasMotorV1: ruleCandidates.length,
     });
     let candidates = ruleCandidates
-      .filter((candidate) => availableProductIds.has(candidate.id))
+      .filter((candidate) => availableProductIds.get(candidate.id) === true)
       .slice(0, recommendationLimit)
       .map((candidate) => ({ ...candidate, availableForSale: true }));
     if (candidates.length === 0) {
@@ -417,7 +432,7 @@ export async function action({ request }) {
       });
 
       if (aiResult?.recommendations?.length > 0) {
-        const verifiedProductIds = await getAvailableProductIds(
+        const verifiedProductIds = await getProductAvailability(
           admin,
           aiResult.recommendations.map(
             (recommendation) => recommendation.product_id,
@@ -429,7 +444,7 @@ export async function action({ request }) {
 
         const aiCandidates = aiResult.recommendations
           .map((recommendation) => {
-            if (!verifiedProductIds.has(recommendation.product_id)) {
+            if (verifiedProductIds.get(recommendation.product_id) !== true) {
               return null;
             }
 
@@ -458,6 +473,29 @@ export async function action({ request }) {
       console.error("Error de IA; se conserva Motor V1:", {
         name: error?.name,
       });
+    }
+
+    if (storeSettings.outOfStockBehavior === "SHOW_LAST") {
+      const selectedIds = new Set(candidates.map((candidate) => candidate.id));
+      const additionalAvailable = availableAiCandidates.filter(
+        (candidate) => !selectedIds.has(candidate.id),
+      );
+      const soldOutCandidates = aiCandidatePool
+        .filter((candidate) => availableProductIds.get(candidate.id) === false)
+        .map((candidate) => ({ ...candidate, availableForSale: false }));
+      if (storeSettings.prioritizeAvailability) {
+        candidates = [...candidates, ...additionalAvailable, ...soldOutCandidates]
+          .slice(0, recommendationLimit);
+      } else {
+        const ruleById = new Map(ruleCandidates.map((candidate) => [candidate.id, candidate]));
+        const mixed = [...candidates, ...additionalAvailable, ...soldOutCandidates]
+          .map((candidate) => ({
+            ...candidate,
+            score: ruleById.get(candidate.id)?.score ?? candidate.score ?? 0,
+          }))
+          .sort((a, b) => b.score - a.score);
+        candidates = mixed.slice(0, recommendationLimit);
+      }
     }
 
     const qualityIssues = assessRecommendationQuality({
