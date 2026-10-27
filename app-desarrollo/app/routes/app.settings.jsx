@@ -32,7 +32,9 @@ export async function loader({ request }) {
 
     return { settings: settings || DEFAULT_SETTINGS, loadError: false };
   } catch (error) {
-    console.error("No se pudo leer la configuración del recomendador:", error);
+    console.error("Recommendation settings read failed", {
+      errorName: error?.name || "Error",
+    });
     return { settings: DEFAULT_SETTINGS, loadError: true };
   }
 }
@@ -78,10 +80,9 @@ export async function action({ request }) {
       },
     });
   } catch (error) {
-    console.error(
-      "No se pudo guardar la configuración del recomendador:",
-      error,
-    );
+    console.error("Recommendation settings save failed", {
+      errorName: error?.name || "Error",
+    });
     return {
       error:
         "No se pudo guardar la configuración. Revisa la terminal de desarrollo.",
@@ -175,7 +176,9 @@ export default function SettingsPage() {
 
 export function ErrorBoundary() {
   const error = useRouteError();
-  console.error("No se pudo cargar la configuración del recomendador:", error);
+  console.error("Recommendation settings route failed", {
+    errorName: error?.name || "Error",
+  });
 
   return (
     <s-page heading="Configuración de recomendaciones">

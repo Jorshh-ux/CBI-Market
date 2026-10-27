@@ -6,6 +6,34 @@ import {
   prepareRecommendationCandidates,
 } from "../services/product-recommendations.server";
 
+const MAX_REQUEST_BYTES = 32_000;
+
+async function readBoundedJson(request) {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("EMPTY_REQUEST_BODY");
+
+  const chunks = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > MAX_REQUEST_BYTES) {
+      await reader.cancel();
+      throw new Error("REQUEST_BODY_TOO_LARGE");
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
 async function getProductAvailability(admin, productIds) {
   if (!productIds.length) return new Map();
 
@@ -28,10 +56,9 @@ async function getProductAvailability(admin, productIds) {
   const result = await response.json();
 
   if (result.errors?.length || !Array.isArray(result.data?.nodes)) {
-    console.error(
-      "Error de Shopify al verificar disponibilidad:",
-      JSON.stringify(result.errors ?? [], null, 2),
-    );
+    console.error("Shopify product availability query failed", {
+      graphqlErrorCount: result.errors?.length || 0,
+    });
     throw new Error("PRODUCT_AVAILABILITY_VERIFICATION_FAILED");
   }
 
@@ -40,7 +67,8 @@ async function getProductAvailability(admin, productIds) {
       .filter(Boolean)
       .map((product) => [
         product.id,
-        product.variants?.nodes?.some((variant) => variant.availableForSale) || false,
+        product.variants?.nodes?.some((variant) => variant.availableForSale) ||
+          false,
       ]),
   );
 }
@@ -94,10 +122,9 @@ async function getStoreProducts(admin) {
       !Array.isArray(result.data?.products?.nodes) ||
       !result.data?.products?.pageInfo
     ) {
-      console.error(
-        "Error de Shopify al consultar productos:",
-        JSON.stringify(result.errors ?? [], null, 2),
-      );
+      console.error("Shopify recommendation catalog query failed", {
+        graphqlErrorCount: result.errors?.length || 0,
+      });
       throw new Error("SHOPIFY_PRODUCT_QUERY_FAILED");
     }
 
@@ -126,6 +153,12 @@ export async function loader({ request }) {
 
     const url = new URL(request.url);
     const requestedQuizId = url.searchParams.get("quiz_id");
+    if (requestedQuizId && requestedQuizId.length > 128) {
+      return Response.json(
+        { error: "El identificador del cuestionario no es válido." },
+        { status: 400 },
+      );
+    }
 
     const storeSettings = await prisma.storeSettings.findUnique({
       where: { shopDomain: session.shop },
@@ -190,7 +223,10 @@ export async function loader({ request }) {
       },
     });
   } catch (error) {
-    console.error("Error al consultar el cuestionario:", error);
+    if (error instanceof Response) throw error;
+    console.error("Public quiz load failed", {
+      errorName: error?.name || "Error",
+    });
 
     return Response.json(
       { error: "No fue posible cargar el cuestionario." },
@@ -214,12 +250,41 @@ export async function action({ request }) {
       );
     }
 
-    const body = await request.json();
+    const contentLength = Number(request.headers.get("content-length") || 0);
+    if (contentLength > MAX_REQUEST_BYTES) {
+      return Response.json(
+        { error: "La solicitud supera el tamaño permitido." },
+        { status: 413 },
+      );
+    }
+    let body;
+    try {
+      body = await readBoundedJson(request);
+    } catch (error) {
+      if (error?.message === "REQUEST_BODY_TOO_LARGE") {
+        return Response.json(
+          { error: "La solicitud supera el tamaño permitido." },
+          { status: 413 },
+        );
+      }
+      return Response.json(
+        { error: "El contenido de la solicitud no es JSON válido." },
+        { status: 400 },
+      );
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return Response.json(
+        { error: "El contenido de la solicitud no es válido." },
+        { status: 400 },
+      );
+    }
     const quizId = body.quiz_id;
     const answers = body.answers;
 
     if (
       typeof quizId !== "string" ||
+      !quizId ||
+      quizId.length > 128 ||
       !Array.isArray(answers) ||
       answers.length > 50
     ) {
@@ -267,8 +332,7 @@ export async function action({ request }) {
       );
     }
 
-    const selectedOptions = [];
-
+    const answersByQuestion = new Map();
     for (const answer of answers) {
       if (typeof answer?.questionId !== "string") {
         return Response.json(
@@ -277,18 +341,32 @@ export async function action({ request }) {
         );
       }
 
-      const question = quiz.questions.find(
-        (item) => item.id === answer.questionId,
-      );
-
-      if (!question) {
+      if (!quiz.questions.some((item) => item.id === answer.questionId)) {
         return Response.json(
           { error: "La pregunta no pertenece a este cuestionario." },
           { status: 400 },
         );
       }
+      const grouped = answersByQuestion.get(answer.questionId) || [];
+      grouped.push(answer);
+      answersByQuestion.set(answer.questionId, grouped);
+    }
+
+    const selectedOptions = [];
+    for (const [questionId, questionAnswers] of answersByQuestion) {
+      const question = quiz.questions.find((item) => item.id === questionId);
+      if (questionAnswers.length > 1 && question.type !== "MULTIPLE_CHOICE") {
+        return Response.json(
+          {
+            error:
+              "Enviaste más de una respuesta para una pregunta de opción única.",
+          },
+          { status: 400 },
+        );
+      }
 
       if (question.type === "TEXT") {
+        const answer = questionAnswers[0];
         const textAnswer =
           typeof answer.textAnswer === "string" ? answer.textAnswer.trim() : "";
 
@@ -311,6 +389,49 @@ export async function action({ request }) {
         continue;
       }
 
+      if (question.type === "MULTIPLE_CHOICE") {
+        const optionIds = questionAnswers.flatMap((answer) =>
+          Array.isArray(answer.optionIds)
+            ? answer.optionIds
+            : [answer.optionId],
+        );
+        if (optionIds.length < 1 || optionIds.length > 20) {
+          return Response.json(
+            { error: "Selecciona opciones válidas para la pregunta." },
+            { status: 400 },
+          );
+        }
+        const selectedIds = new Set(optionIds);
+        if (
+          selectedIds.size !== optionIds.length ||
+          optionIds.some((id) => typeof id !== "string")
+        ) {
+          return Response.json(
+            { error: "Las opciones seleccionadas no son válidas." },
+            { status: 400 },
+          );
+        }
+        const options = question.options.filter((option) =>
+          selectedIds.has(option.id),
+        );
+        if (options.length !== selectedIds.size) {
+          return Response.json(
+            { error: "Una opción no pertenece a este cuestionario." },
+            { status: 400 },
+          );
+        }
+        for (const option of options) {
+          selectedOptions.push({
+            questionId: question.id,
+            question: question.text,
+            label: option.label,
+            value: option.value,
+          });
+        }
+        continue;
+      }
+
+      const answer = questionAnswers[0];
       if (typeof answer.optionId !== "string") {
         return Response.json(
           { error: "Hay una respuesta con formato inválido." },
@@ -355,12 +476,15 @@ export async function action({ request }) {
     try {
       catalogProducts = await getStoreProducts(admin);
     } catch (error) {
-      console.error("No se pudo cargar el catálogo de Shopify:", {
-        name: error?.name,
-      });
+      console.error(
+        "Shopify catalog unavailable; recommendation request stopped",
+        {
+          errorName: error?.name || "Error",
+        },
+      );
       return Response.json(
-        { error: "No fue posible consultar los productos." },
-        { status: 502 },
+        { error: "Shopify no respondió. Inténtalo de nuevo en unos momentos." },
+        { status: 503, headers: { "Retry-After": "30" } },
       );
     }
 
@@ -370,13 +494,10 @@ export async function action({ request }) {
     // No usamos onlineStoreUrl para detectar publicación: Shopify puede
     // devolverlo como null en tiendas de desarrollo protegidas por contraseña.
     const availableProducts = activeProducts;
-    const {
-      eligibleProducts,
-      ruleCandidates,
-      aiCandidatePool,
-    } = prepareRecommendationCandidates(availableProducts, selectedOptions, {
-      respectBudget: storeSettings.respectBudget,
-    });
+    const { eligibleProducts, ruleCandidates, aiCandidatePool } =
+      prepareRecommendationCandidates(availableProducts, selectedOptions, {
+        respectBudget: storeSettings.respectBudget,
+      });
 
     const recommendationLimit = Math.min(
       3,
@@ -391,12 +512,18 @@ export async function action({ request }) {
         aiCandidatePool.map((candidate) => candidate.id),
       );
     } catch (error) {
-      console.error("No se pudo confirmar el inventario de los candidatos:", {
-        name: error?.name,
-      });
+      console.error(
+        "Shopify availability check failed; no unverified products returned",
+        {
+          errorName: error?.name || "Error",
+        },
+      );
       return Response.json(
-        { error: "No se pudo verificar la disponibilidad de los productos." },
-        { status: 502 },
+        {
+          error:
+            "Shopify no pudo confirmar la disponibilidad. Inténtalo de nuevo.",
+        },
+        { status: 503, headers: { "Retry-After": "30" } },
       );
     }
 
@@ -458,7 +585,9 @@ export async function action({ request }) {
               ...candidate,
               score: recommendation.score,
               priority: recommendation.priority,
-              reasons: [...new Set([...candidate.reasons, recommendation.reason])],
+              reasons: [
+                ...new Set([...candidate.reasons, recommendation.reason]),
+              ],
             };
           })
           .filter(Boolean)
@@ -471,7 +600,7 @@ export async function action({ request }) {
       }
     } catch (error) {
       console.error("Error de IA; se conserva Motor V1:", {
-        name: error?.name,
+        errorName: error?.name || "Error",
       });
     }
 
@@ -484,11 +613,20 @@ export async function action({ request }) {
         .filter((candidate) => availableProductIds.get(candidate.id) === false)
         .map((candidate) => ({ ...candidate, availableForSale: false }));
       if (storeSettings.prioritizeAvailability) {
-        candidates = [...candidates, ...additionalAvailable, ...soldOutCandidates]
-          .slice(0, recommendationLimit);
+        candidates = [
+          ...candidates,
+          ...additionalAvailable,
+          ...soldOutCandidates,
+        ].slice(0, recommendationLimit);
       } else {
-        const ruleById = new Map(ruleCandidates.map((candidate) => [candidate.id, candidate]));
-        const mixed = [...candidates, ...additionalAvailable, ...soldOutCandidates]
+        const ruleById = new Map(
+          ruleCandidates.map((candidate) => [candidate.id, candidate]),
+        );
+        const mixed = [
+          ...candidates,
+          ...additionalAvailable,
+          ...soldOutCandidates,
+        ]
           .map((candidate) => ({
             ...candidate,
             score: ruleById.get(candidate.id)?.score ?? candidate.score ?? 0,
@@ -505,16 +643,9 @@ export async function action({ request }) {
     });
     if (qualityIssues.length) {
       console.warn("RECOMMENDATION_QUALITY_REVIEW", {
-        quizId: quiz.id,
         engine,
         issues: qualityIssues,
-        recommendations: candidates.map((candidate) => ({
-          productId: candidate.id,
-          title: candidate.title,
-          price: candidate.price,
-          score: candidate.score,
-          reasons: candidate.reasons,
-        })),
+        recommendationCount: candidates.length,
       });
     }
 
@@ -533,11 +664,14 @@ export async function action({ request }) {
               : eligibleProducts.length === 0
                 ? "No hay productos de esta categoría con imagen y precio para recomendar."
                 : availableAiCandidates.length === 0
-                ? "Los productos publicados no tienen variantes disponibles para venta."
-                : "No se pudo obtener una recomendación; revisa la configuración de la IA.",
+                  ? "Los productos publicados no tienen variantes disponibles para venta."
+                  : "No se pudo obtener una recomendación; revisa la configuración de la IA.",
     });
   } catch (error) {
-    console.error("Error en el motor de recomendaciones:", error);
+    if (error instanceof Response) throw error;
+    console.error("Recommendation request failed", {
+      errorName: error?.name || "Error",
+    });
 
     return Response.json(
       { error: "No fue posible generar los productos candidatos." },

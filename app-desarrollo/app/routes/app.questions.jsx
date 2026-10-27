@@ -1,4 +1,3 @@
-
 import { useEffect } from "react";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -50,8 +49,8 @@ export const action = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const quiz = await getOrCreateQuiz(session.shop);
   const formData = await request.formData();
-  const intent = formData.get("intent");
-  console.log("DATOS RECIBIDOS:", Object.fromEntries(formData.entries()));
+  const intentValue = formData.get("intent");
+  const intent = typeof intentValue === "string" ? intentValue : "";
 
   try {
     if (intent === "save") {
@@ -65,8 +64,11 @@ export const action = async ({ request }) => {
         .map((label) => label.trim())
         .filter(Boolean);
 
-      if (!text) {
-        return { error: "Escribe el texto de la pregunta." };
+      if (!text || text.length > 240) {
+        return { error: "Escribe una pregunta de hasta 240 caracteres." };
+      }
+      if (rawOptions.length > 4000) {
+        return { error: "Las opciones superan el límite permitido." };
       }
 
       if (!["SINGLE_CHOICE", "MULTIPLE_CHOICE", "TEXT"].includes(type)) {
@@ -79,10 +81,27 @@ export const action = async ({ request }) => {
         };
       }
 
+      if (
+        optionLabels.length > 20 ||
+        optionLabels.some((label) => label.length > 120)
+      ) {
+        return { error: "Agrega hasta 20 opciones de máximo 120 caracteres." };
+      }
+      const normalizedOptions = optionLabels.map((label) =>
+        label.toLocaleLowerCase(),
+      );
+      if (new Set(normalizedOptions).size !== normalizedOptions.length) {
+        return { error: "No repitas opciones en la misma pregunta." };
+      }
+
       if (type === "TEXT" && optionLabels.length > 0) {
         return {
           error: "Las preguntas de texto libre no deben tener opciones.",
         };
+      }
+
+      if (id && id.length > 128) {
+        return { error: "La pregunta indicada no es válida." };
       }
 
       const data = { text, type, required, quizId: quiz.id };
@@ -124,6 +143,12 @@ export const action = async ({ request }) => {
         orderBy: { position: "desc" },
       });
 
+      if ((lastQuestion?.position ?? -1) >= 49) {
+        return {
+          error: "El cuestionario puede tener como máximo 50 preguntas.",
+        };
+      }
+
       await prisma.question.create({
         data: {
           ...data,
@@ -146,6 +171,8 @@ export const action = async ({ request }) => {
 
     if (intent === "delete") {
       const id = String(formData.get("id") || "");
+      if (!id || id.length > 128)
+        return { error: "La pregunta indicada no es válida." };
       const question = await prisma.question.findFirst({
         where: { id, quizId: quiz.id },
       });
@@ -176,6 +203,9 @@ export const action = async ({ request }) => {
     if (intent === "move") {
       const id = String(formData.get("id") || "");
       const direction = String(formData.get("direction") || "");
+      if (!id || id.length > 128 || !["up", "down"].includes(direction)) {
+        return { error: "La solicitud para mover la pregunta no es válida." };
+      }
 
       const questions = await prisma.question.findMany({
         where: { quizId: quiz.id },
@@ -185,11 +215,7 @@ export const action = async ({ request }) => {
       const index = questions.findIndex((question) => question.id === id);
       const targetIndex = direction === "up" ? index - 1 : index + 1;
 
-      if (
-        index < 0 ||
-        targetIndex < 0 ||
-        targetIndex >= questions.length
-      ) {
+      if (index < 0 || targetIndex < 0 || targetIndex >= questions.length) {
         return { error: "No se puede mover la pregunta en esa dirección." };
       }
 
@@ -219,9 +245,13 @@ export const action = async ({ request }) => {
 
     return { error: "Operación no reconocida." };
   } catch (error) {
-    console.error("Error al administrar preguntas:", error);
+    console.error("Admin question mutation failed", {
+      intent,
+      errorName: error?.name || "Error",
+    });
     return {
-      error: "No se pudo guardar el cambio. Revisa los datos e inténtalo otra vez.",
+      error:
+        "No se pudo guardar el cambio. Revisa los datos e inténtalo otra vez.",
     };
   }
 };
@@ -293,10 +323,14 @@ export default function QuestionsPage() {
                         document.getElementById("question-required").checked =
                           question.required;
                         document.getElementById("question-options").value =
-                          question.options.map((option) => option.label).join("\n");
-                        document.getElementById("question-form").scrollIntoView({
-                          behavior: "smooth",
-                        });
+                          question.options
+                            .map((option) => option.label)
+                            .join("\n");
+                        document
+                          .getElementById("question-form")
+                          .scrollIntoView({
+                            behavior: "smooth",
+                          });
                       }}
                     >
                       Editar
@@ -306,10 +340,7 @@ export default function QuestionsPage() {
                       <input type="hidden" name="intent" value="move" />
                       <input type="hidden" name="id" value={question.id} />
                       <input type="hidden" name="direction" value="up" />
-                      <button
-                        type="submit"
-                        disabled={busy || index === 0}
-                      >
+                      <button type="submit" disabled={busy || index === 0}>
                         Subir
                       </button>
                     </fetcher.Form>

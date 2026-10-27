@@ -2,20 +2,24 @@ import { authenticate } from "../shopify.server";
 import db from "../db.server";
 
 export const action = async ({ request }) => {
-  const { payload, session, topic, shop } = await authenticate.webhook(request);
+  const { payload, session, topic } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
   const current = payload.current;
 
   if (session) {
-    await db.session.update({
-      where: {
-        id: session.id,
-      },
-      data: {
-        scope: current.toString(),
-      },
-    });
+    try {
+      await db.session.update({
+        where: { id: session.id },
+        data: { scope: current.toString() },
+      });
+      console.info("Shopify app scopes updated", { topic });
+    } catch (error) {
+      console.error("Shopify app scope update failed", {
+        topic,
+        errorName: error?.name || "Error",
+      });
+      return new Response("Temporary scope update failure", { status: 500 });
+    }
   }
 
   return new Response();

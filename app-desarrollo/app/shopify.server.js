@@ -7,9 +7,17 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 
+const shopifyApiSecret = process.env.SHOPIFY_API_SECRET;
+if (!shopifyApiSecret && process.env.NODE_ENV === "production") {
+  throw new Error(
+    "Missing required server environment variable: SHOPIFY_API_SECRET",
+  );
+}
+
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
+  // Do not silently replace a missing signing secret with an empty string.
+  apiSecretKey: shopifyApiSecret,
   apiVersion: ApiVersion.July26,
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
