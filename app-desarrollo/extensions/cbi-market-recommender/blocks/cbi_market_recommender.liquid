@@ -229,8 +229,7 @@
 
     // Hide the quiz after the shopper expands the store's product list.
     // Keep the state for this tab so a theme section refresh does not bring it back.
-    const hiddenAfterMoreKey =
-      'cbi-recommender-hidden:' + location.pathname + ':{{ block.id }}';
+    const hiddenAfterMoreKey = 'cbi-recommender-hidden-after-more-products';
     try {
       if (sessionStorage.getItem(hiddenAfterMoreKey) === 'true') {
         root.hidden = true;
@@ -251,7 +250,13 @@
         .normalize('NFD')
         .replace(/[\u0300-\u036f]/g, '')
         .replace(/\s+/g, ' ');
-      if (!label.includes('ver mas productos')) return;
+      const isMoreProductsAction =
+        label.includes('ver mas productos') ||
+        label.includes('view more products') ||
+        label.includes('view all products') ||
+        label.includes('mostrar mas productos') ||
+        label.includes('show more products');
+      if (!isMoreProductsAction) return;
 
       root.hidden = true;
       try {
