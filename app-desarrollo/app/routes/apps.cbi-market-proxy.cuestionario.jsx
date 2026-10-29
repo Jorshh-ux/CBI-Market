@@ -8,31 +8,43 @@ import {
 
 const MAX_REQUEST_BYTES = 32_000;
 
+
 async function readBoundedJson(request) {
   const reader = request.body?.getReader();
   if (!reader) throw new Error("EMPTY_REQUEST_BODY");
 
   const chunks = [];
   let totalBytes = 0;
-  while (true) {
-    const { done, value } = await reader.read();
+  let done = false;
+
+  while (!done) {
+    const result = await reader.read();
+    done = result.done;
+
     if (done) break;
+
+    const value = result.value;
     totalBytes += value.byteLength;
+
     if (totalBytes > MAX_REQUEST_BYTES) {
       await reader.cancel();
       throw new Error("REQUEST_BODY_TOO_LARGE");
     }
+
     chunks.push(value);
   }
 
   const bytes = new Uint8Array(totalBytes);
   let offset = 0;
+
   for (const chunk of chunks) {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+
   return JSON.parse(new TextDecoder().decode(bytes));
 }
+
 
 async function getProductAvailability(admin, productIds) {
   if (!productIds.length) return new Map();

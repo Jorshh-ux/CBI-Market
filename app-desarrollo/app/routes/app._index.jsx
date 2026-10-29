@@ -43,19 +43,11 @@ export default function Index() {
   const fetcher = useFetcher();
   const shopify = useAppBridge();
 
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
-
   useEffect(() => {
     if (fetcher.data?.product?.id) {
       shopify.toast.show("Product created");
     }
   }, [fetcher.data?.product?.id, shopify]);
-
-  const generateProduct = () => {
-    fetcher.submit({}, { method: "POST" });
-  };
 
   return (
     <s-page heading="Catálogo de productos">

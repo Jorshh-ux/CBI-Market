@@ -261,7 +261,6 @@ export default function QuestionsPage() {
   const fetcher = useFetcher();
   const shopify = useAppBridge();
 
-  const editingId = fetcher.formData?.get("id");
   const busy = fetcher.state !== "idle";
 
   useEffect(() => {
@@ -441,3 +440,4 @@ export default function QuestionsPage() {
 export const headers = (headersArgs) => {
   return boundary.headers(headersArgs);
 };
+
